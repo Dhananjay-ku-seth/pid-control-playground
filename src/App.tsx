@@ -183,7 +183,10 @@ export default function App() {
           <h1>PID CONTROL PLAYGROUND</h1>
           <p>Line-follower robot · closed-loop steering · tune the gains, watch it track — or oscillate</p>
         </div>
-        <span className="src">ECE Portfolio · Dhananjay Seth</span>
+        <div className="badges">
+          <a className="labbench-badge" href="https://labbench-hub.vercel.app/" target="_blank" rel="noopener noreferrer">⚡ LabBench</a>
+          <a className="src" href="https://dhananjay-kumar-seth.vercel.app/" target="_blank" rel="noopener noreferrer">ECE Portfolio · Dhananjay Seth</a>
+        </div>
       </header>
 
       <div className="stage">
