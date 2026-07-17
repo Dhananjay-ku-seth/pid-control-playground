@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import AuthPanel from "./AuthPanel";
+import SavePreset, { type PidConfig } from "./SavePreset";
 
 type Track = "sine" | "chicane" | "step" | "straight";
 
@@ -184,10 +186,22 @@ export default function App() {
           <p>Line-follower robot · closed-loop steering · tune the gains, watch it track — or oscillate</p>
         </div>
         <div className="badges">
-          <a className="labbench-badge" href="https://labbench-hub.vercel.app/" target="_blank" rel="noopener noreferrer">⚡ LabBench</a>
-          <a className="src" href="https://dhananjay-kumar-seth.vercel.app/" target="_blank" rel="noopener noreferrer">ECE Portfolio · Dhananjay Seth</a>
+          <AuthPanel />
+          <div className="badge-links">
+            <a className="labbench-badge" href="https://labbench-hub.vercel.app/" target="_blank" rel="noopener noreferrer">⚡ LabBench</a>
+            <a className="src" href="https://dhananjay-kumar-seth.vercel.app/" target="_blank" rel="noopener noreferrer">ECE Portfolio · Dhananjay Seth</a>
+          </div>
         </div>
       </header>
+
+      <div className="savebar">
+        <SavePreset
+          config={{ kp, ki, kd, speed, track }}
+          onLoad={(c: PidConfig) => {
+            setKp(c.kp); setKi(c.ki); setKd(c.kd); setSpeed(c.speed); setTrack(c.track);
+          }}
+        />
+      </div>
 
       <div className="stage">
         <div className="scope">
