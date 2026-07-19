@@ -17,7 +17,7 @@ Part of the [LabBench](https://labbench-hub.vercel.app/) suite of interactive en
 ## LabBench Pro
 Sign in to save and reload your gain tunings (Kp/Ki/Kd, speed, track) — part of the same optional ₹29/mo
 LabBench Pro subscription as the rest of the suite. Upgrade from
-[Logic Circuit Simulator](https://logic-circuit-sim.vercel.app/), which hosts the checkout for all 5 tools.
+[Logic Circuit Simulator](https://logic-circuit-sim.vercel.app/), which hosts the checkout for all 7 tools.
 
 ## Tech
 React + TypeScript + Vite. Physics, PID loop, and rendering hand-written on a `<canvas>` — no libraries.
