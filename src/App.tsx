@@ -20,6 +20,48 @@ type Sim = {
   pTerm: number; iTerm: number; dTerm: number;
 };
 
+type StepResult = {
+  data: { t: number; y: number }[];
+  target: number;
+  metrics: { riseTime: number; overshoot: number; settlingTime: number; steadyStateError: number };
+};
+
+// Isolated step-response test: same double-integrator plant + PID law as the
+// live loop, but against a fixed setpoint instead of a scrolling track, run
+// as one deterministic pass so textbook metrics can be read off directly.
+function runStepResponse(kp: number, ki: number, kd: number, target = 220, duration = 3, dt = 0.002): StepResult {
+  let y = 0, vy = 0, integral = 0, lastE = -target;
+  const data: { t: number; y: number }[] = [];
+  const steps = Math.round(duration / dt);
+  for (let n = 0; n <= steps; n++) {
+    const t = n * dt;
+    const e = y - target;
+    integral += e * dt;
+    integral = Math.max(-260, Math.min(260, integral));
+    const dedt = (e - lastE) / dt;
+    lastE = e;
+    const u = kp * e + ki * integral + kd * dedt;
+    const accel = -u - 0.9 * vy;
+    vy += accel * dt;
+    vy = Math.max(-900, Math.min(900, vy));
+    y += vy * dt;
+    data.push({ t, y });
+  }
+  const finalY = data[data.length - 1].y;
+  const steadyStateError = target - finalY;
+  let riseTime = duration;
+  for (const d of data) { if (Math.abs(d.y) >= 0.9 * Math.abs(target)) { riseTime = d.t; break; } }
+  let peak = 0;
+  for (const d of data) if (Math.abs(d.y) > Math.abs(peak)) peak = d.y;
+  const overshoot = target !== 0 ? Math.max(0, ((peak - target) / target) * 100) : 0;
+  const band = Math.abs(target) * 0.05;
+  let settlingTime = 0;
+  for (let i = data.length - 1; i >= 0; i--) {
+    if (Math.abs(data[i].y - target) > band) { settlingTime = data[i].t; break; }
+  }
+  return { data, target, metrics: { riseTime, overshoot, settlingTime, steadyStateError } };
+}
+
 const PRESETS: Record<string, { kp: number; ki: number; kd: number; note: string }> = {
   "P-only (unstable)": { kp: 9, ki: 0, kd: 0, note: "Proportional alone → endless oscillation / overshoot" },
   "PD (damped)":       { kp: 9, ki: 0, kd: 5, note: "Derivative adds damping → smooth tracking" },
@@ -37,9 +79,11 @@ export default function App() {
   const [rms, setRms] = useState(0);
   const [err, setErr] = useState(0);
   const [terms, setTerms] = useState({ p: 0, i: 0, d: 0 });
+  const [stepResult, setStepResult] = useState<StepResult | null>(null);
 
   const road = useRef<HTMLCanvasElement>(null);
   const plot = useRef<HTMLCanvasElement>(null);
+  const stepCanvas = useRef<HTMLCanvasElement>(null);
   const raf = useRef<number>(0);
   const last = useRef<number>(0);
   const sim = useRef<Sim>({ y: 0, vy: 0, integral: 0, lastE: 0, worldX: 0, hist: [], rms: 0, kick: 0, pTerm: 0, iTerm: 0, dTerm: 0 });
@@ -177,6 +221,36 @@ export default function App() {
     return () => cancelAnimationFrame(raf.current);
   }, []);
 
+  useEffect(() => {
+    const cv = stepCanvas.current;
+    if (!cv || !stepResult) return;
+    const c = cv.getContext("2d")!;
+    const W = cv.width, H = cv.height, padL = 44, padB = 26, padT = 10, padR = 10;
+    const x0 = padL, x1 = W - padR, y0 = padT, y1 = H - padB;
+    const { data, target } = stepResult;
+    const maxY = Math.max(target * 1.3, ...data.map((d) => Math.abs(d.y))) || 1;
+    const duration = data[data.length - 1]?.t || 1;
+    const xAt = (t: number) => x0 + (t / duration) * (x1 - x0);
+    const yAt = (v: number) => y1 - ((v + maxY) / (2 * maxY)) * (y1 - y0);
+
+    c.fillStyle = "#0a0f0b"; c.fillRect(0, 0, W, H);
+    c.strokeStyle = "#1f2a22"; c.lineWidth = 1;
+    for (let gy = 0; gy <= 4; gy++) { const y = y0 + (gy / 4) * (y1 - y0); c.beginPath(); c.moveTo(x0, y); c.lineTo(x1, y); c.stroke(); }
+    // target line
+    c.strokeStyle = "#f59e0b"; c.setLineDash([6, 6]); c.lineWidth = 1.5; c.beginPath();
+    c.moveTo(x0, yAt(target)); c.lineTo(x1, yAt(target)); c.stroke(); c.setLineDash([]);
+    c.fillStyle = "#f59e0b"; c.font = "10px ui-monospace, monospace"; c.fillText("target", x1 - 40, yAt(target) - 4);
+    // response curve
+    c.strokeStyle = "#34d399"; c.lineWidth = 2; c.beginPath();
+    data.forEach((d, i) => { const x = xAt(d.t), y = yAt(d.y); i === 0 ? c.moveTo(x, y) : c.lineTo(x, y); });
+    c.stroke();
+    // axis labels
+    c.fillStyle = "#4b7a5f"; c.font = "10px ui-monospace, monospace";
+    c.fillText("0s", x0 - 4, y1 + 14);
+    c.fillText(duration.toFixed(1) + "s", x1 - 20, y1 + 14);
+    c.save(); c.translate(12, (y0 + y1) / 2); c.rotate(-Math.PI / 2); c.fillText("output", 0, 0); c.restore();
+  }, [stepResult]);
+
   return (
     <div className="app">
       <header>
@@ -251,9 +325,25 @@ export default function App() {
             <div className="block actions">
               <button className="kick" onClick={() => { sim.current.kick = 520 * (Math.random() > 0.5 ? 1 : -1); }}>⚡ Disturbance</button>
               <button onClick={reset}>↺ Reset</button>
+              <button onClick={() => setStepResult(runStepResponse(kp, ki, kd))}>📊 Step Response Test</button>
             </div>
           </div>
         </div>
+
+        {stepResult && (
+          <div className="scope">
+            <div className="scope-head"><span>📊 STEP RESPONSE</span><small>isolated setpoint jump — rise time, overshoot, settling, steady-state error</small></div>
+            <canvas ref={stepCanvas} width={900} height={180} />
+            <div className="step-metrics">
+              <Metric label="Rise time (90%)" v={stepResult.metrics.riseTime.toFixed(2) + "s"} tone="p" />
+              <Metric label="Overshoot" v={stepResult.metrics.overshoot.toFixed(1) + "%"}
+                tone={stepResult.metrics.overshoot < 5 ? "good" : stepResult.metrics.overshoot < 25 ? "warn" : "bad"} />
+              <Metric label="Settling time (±5%)" v={stepResult.metrics.settlingTime.toFixed(2) + "s"} tone="d" />
+              <Metric label="Steady-state error" v={stepResult.metrics.steadyStateError.toFixed(1) + " px"}
+                tone={Math.abs(stepResult.metrics.steadyStateError) < 5 ? "good" : "warn"} />
+            </div>
+          </div>
+        )}
 
         <p className="hint">
           Try it: hit <b>P-only</b> and watch it overshoot the line forever. Add <b>Kd</b> and the wobble damps out.
