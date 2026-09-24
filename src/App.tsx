@@ -23,13 +23,13 @@ type Sim = {
 type StepResult = {
   data: { t: number; y: number }[];
   target: number;
-  metrics: { riseTime: number; overshoot: number; settlingTime: number; steadyStateError: number };
+  metrics: { riseTime: number; overshoot: number; settlingTime: number | null; steadyStateError: number };
 };
 
 // Isolated step-response test: same double-integrator plant + PID law as the
 // live loop, but against a fixed setpoint instead of a scrolling track, run
 // as one deterministic pass so textbook metrics can be read off directly.
-function runStepResponse(kp: number, ki: number, kd: number, target = 220, duration = 3, dt = 0.002): StepResult {
+function runStepResponse(kp: number, ki: number, kd: number, target = 220, duration = 8, dt = 0.002): StepResult {
   let y = 0, vy = 0, integral = 0, lastE = -target;
   const data: { t: number; y: number }[] = [];
   const steps = Math.round(duration / dt);
@@ -47,17 +47,20 @@ function runStepResponse(kp: number, ki: number, kd: number, target = 220, durat
     y += vy * dt;
     data.push({ t, y });
   }
-  const finalY = data[data.length - 1].y;
-  const steadyStateError = target - finalY;
+  // Average over the last 0.25 s so a still-ringing response is not judged on one sample.
+  const tail = data.slice(-Math.max(1, Math.round(0.25 / dt)));
+  const steadyStateError = target - tail.reduce((sum, d) => sum + d.y, 0) / tail.length;
   let riseTime = duration;
   for (const d of data) { if (Math.abs(d.y) >= 0.9 * Math.abs(target)) { riseTime = d.t; break; } }
   let peak = 0;
   for (const d of data) if (Math.abs(d.y) > Math.abs(peak)) peak = d.y;
   const overshoot = target !== 0 ? Math.max(0, ((peak - target) / target) * 100) : 0;
   const band = Math.abs(target) * 0.05;
-  let settlingTime = 0;
+  // Settling time = the last moment the response was outside the band. If it is still outside at the end of
+  // the test it never settled, which is reported as null rather than as the test duration.
+  let settlingTime: number | null = 0;
   for (let i = data.length - 1; i >= 0; i--) {
-    if (Math.abs(data[i].y - target) > band) { settlingTime = data[i].t; break; }
+    if (Math.abs(data[i].y - target) > band) { settlingTime = i === data.length - 1 ? null : data[i].t; break; }
   }
   return { data, target, metrics: { riseTime, overshoot, settlingTime, steadyStateError } };
 }
@@ -338,8 +341,8 @@ export default function App() {
               <Metric label="Rise time (90%)" v={stepResult.metrics.riseTime.toFixed(2) + "s"} tone="p" />
               <Metric label="Overshoot" v={stepResult.metrics.overshoot.toFixed(1) + "%"}
                 tone={stepResult.metrics.overshoot < 5 ? "good" : stepResult.metrics.overshoot < 25 ? "warn" : "bad"} />
-              <Metric label="Settling time (±5%)" v={stepResult.metrics.settlingTime.toFixed(2) + "s"} tone="d" />
-              <Metric label="Steady-state error" v={stepResult.metrics.steadyStateError.toFixed(1) + " px"}
+              <Metric label="Settling time (±5%)" v={stepResult.metrics.settlingTime === null ? "not settled" : stepResult.metrics.settlingTime.toFixed(2) + "s"} tone={stepResult.metrics.settlingTime === null ? "bad" : "d"} />
+              <Metric label={stepResult.metrics.settlingTime === null ? "Error at end (not settled)" : "Steady-state error"} v={stepResult.metrics.steadyStateError.toFixed(1) + " px"}
                 tone={Math.abs(stepResult.metrics.steadyStateError) < 5 ? "good" : "warn"} />
             </div>
           </div>
