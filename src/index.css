@@ -147,3 +147,17 @@ footer { text-align: center; color: var(--dim); font-size: 11.5px; margin-top: 2
 
 .auth-link { background: none; border: 0; color: inherit; opacity: .7; cursor: pointer; font-size: 12px; text-decoration: underline; padding: 2px 0; align-self: flex-start; }
 .auth-link:hover { opacity: 1; }
+
+/* ---- analytical tuner, play/pause, implied response, export (added) ---- */
+.actions button.on { background: var(--green); color: #04150d; font-weight: 600; border-color: var(--green); }
+.implied { font-size: 11px; color: var(--dim); margin: 2px 0 0; line-height: 1.5; }
+.implied-note { opacity: 0.7; }
+.tuner-help { font-size: 11px; color: var(--dim); margin: 0 0 2px; }
+.tuner-slider { display: grid; grid-template-columns: 1fr; gap: 4px; font-size: 11px; color: var(--dim); }
+.tune-apply { background: var(--green); color: #04150d; font-weight: 700; border: none; border-radius: 8px; padding: 9px 12px; cursor: pointer; margin-top: 2px; }
+.tune-apply:hover { filter: brightness(1.08); }
+.scope-head { flex-wrap: wrap; row-gap: 4px; }
+.export-group { display: flex; gap: 6px; margin-left: auto; }
+.ghost-btn { font-family: inherit; font-size: 11px; cursor: pointer; background: transparent; color: var(--dim);
+  border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; }
+.ghost-btn:hover { color: var(--txt); border-color: var(--green); }

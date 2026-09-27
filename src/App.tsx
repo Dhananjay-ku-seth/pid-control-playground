@@ -65,6 +65,36 @@ function runStepResponse(kp: number, ki: number, kd: number, target = 220, durat
   return { data, target, metrics: { riseTime, overshoot, settlingTime, steadyStateError } };
 }
 
+// This plant is an exactly-known linear system: with P+D control the closed loop is
+//   y'' + (0.9 + Kd) y' + Kp y = Kp * target
+// i.e. a standard second-order response with wn = sqrt(Kp) and 2*zeta*wn = 0.9 + Kd. That means
+// the gains for a *chosen* damping ratio and settling time can be solved for directly, instead of
+// hunted for by trial and error — real pole-placement design, not a rule of thumb.
+// (Ziegler–Nichols' "ultimate gain" method does not apply to this plant: its damping term is always
+// positive, so it is stable for every Kp under P-only control and never breaks into sustained
+// oscillation the way a higher-order plant would.)
+function designGains(zeta: number, settlingTime: number): { kp: number; kd: number; wn: number } {
+  const wn = 3 / (zeta * settlingTime); // ~5%-band settling time for a 2nd-order response
+  const kp = wn * wn;
+  const kd = Math.max(0, 2 * zeta * wn - 0.9);
+  return { kp, kd, wn };
+}
+
+// The reverse direction: given the gains actually on the sliders (ignoring Ki, which this simple
+// model does not include), what damping ratio and natural frequency do they imply right now?
+function impliedResponse(kp: number, kd: number): { zeta: number; wn: number } | null {
+  if (kp <= 0) return null;
+  const wn = Math.sqrt(kp);
+  const zeta = (0.9 + kd) / (2 * wn);
+  return { zeta, wn };
+}
+
+const TUNE_PRESETS: { label: string; zeta: number }[] = [
+  { label: "Fast, some overshoot", zeta: 0.6 },
+  { label: "Balanced", zeta: 0.8 },
+  { label: "No overshoot", zeta: 1.0 },
+];
+
 const PRESETS: Record<string, { kp: number; ki: number; kd: number; note: string }> = {
   "P-only (unstable)": { kp: 9, ki: 0, kd: 0, note: "Proportional alone → endless oscillation / overshoot" },
   "PD (damped)":       { kp: 9, ki: 0, kd: 5, note: "Derivative adds damping → smooth tracking" },
@@ -83,6 +113,9 @@ export default function App() {
   const [err, setErr] = useState(0);
   const [terms, setTerms] = useState({ p: 0, i: 0, d: 0 });
   const [stepResult, setStepResult] = useState<StepResult | null>(null);
+  const [prevStepResult, setPrevStepResult] = useState<StepResult | null>(null);
+  const [tuneZeta, setTuneZeta] = useState(0.8);
+  const [tuneTs, setTuneTs] = useState(1.2);
 
   const road = useRef<HTMLCanvasElement>(null);
   const plot = useRef<HTMLCanvasElement>(null);
@@ -104,6 +137,54 @@ export default function App() {
   function applyPreset(name: string) {
     const p = PRESETS[name];
     setKp(p.kp); setKi(p.ki); setKd(p.kd);
+  }
+
+  function runStep() {
+    setPrevStepResult(stepResult);
+    setStepResult(runStepResponse(kp, ki, kd));
+  }
+
+  function applyTuning() {
+    const { kp: newKp, kd: newKd } = designGains(tuneZeta, tuneTs);
+    setKp(Math.round(newKp * 100) / 100);
+    setKd(Math.round(newKd * 100) / 100);
+    setPrevStepResult(stepResult);
+    setStepResult(runStepResponse(newKp, ki, newKd));
+  }
+
+  // Space toggles run/pause, unless the user is typing (e.g. naming a saved tuning).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (e.code === "Space" && !typing) {
+        e.preventDefault();
+        setRunning((r) => !r);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  function exportStepPng() {
+    const cv = stepCanvas.current;
+    if (!cv) return;
+    const a = document.createElement("a");
+    a.href = cv.toDataURL("image/png");
+    a.download = `pid-step-response-${Date.now()}.png`;
+    a.click();
+  }
+
+  function exportStepCsv() {
+    if (!stepResult) return;
+    let csv = "time_s,output,target\n";
+    for (const d of stepResult.data) csv += `${d.t.toFixed(3)},${d.y.toFixed(3)},${stepResult.target}\n`;
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `pid-step-response-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 
   useEffect(() => {
@@ -231,7 +312,7 @@ export default function App() {
     const W = cv.width, H = cv.height, padL = 44, padB = 26, padT = 10, padR = 10;
     const x0 = padL, x1 = W - padR, y0 = padT, y1 = H - padB;
     const { data, target } = stepResult;
-    const maxY = Math.max(target * 1.3, ...data.map((d) => Math.abs(d.y))) || 1;
+    const maxY = Math.max(target * 1.3, ...data.map((d) => Math.abs(d.y)), ...(prevStepResult?.data.map((d) => Math.abs(d.y)) ?? [])) || 1;
     const duration = data[data.length - 1]?.t || 1;
     const xAt = (t: number) => x0 + (t / duration) * (x1 - x0);
     const yAt = (v: number) => y1 - ((v + maxY) / (2 * maxY)) * (y1 - y0);
@@ -243,6 +324,13 @@ export default function App() {
     c.strokeStyle = "#f59e0b"; c.setLineDash([6, 6]); c.lineWidth = 1.5; c.beginPath();
     c.moveTo(x0, yAt(target)); c.lineTo(x1, yAt(target)); c.stroke(); c.setLineDash([]);
     c.fillStyle = "#f59e0b"; c.font = "10px ui-monospace, monospace"; c.fillText("target", x1 - 40, yAt(target) - 4);
+    // ghost of the previous run, so a re-tune's effect is visible at a glance
+    if (prevStepResult) {
+      c.strokeStyle = "#5b6b63"; c.setLineDash([3, 4]); c.lineWidth = 1.5; c.beginPath();
+      prevStepResult.data.forEach((d, i) => { const x = xAt(d.t), y = yAt(d.y); i === 0 ? c.moveTo(x, y) : c.lineTo(x, y); });
+      c.stroke(); c.setLineDash([]);
+      c.fillStyle = "#5b6b63"; c.fillText("previous", x0 + 4, y0 + 10);
+    }
     // response curve
     c.strokeStyle = "#34d399"; c.lineWidth = 2; c.beginPath();
     data.forEach((d, i) => { const x = xAt(d.t), y = yAt(d.y); i === 0 ? c.moveTo(x, y) : c.lineTo(x, y); });
@@ -252,7 +340,7 @@ export default function App() {
     c.fillText("0s", x0 - 4, y1 + 14);
     c.fillText(duration.toFixed(1) + "s", x1 - 20, y1 + 14);
     c.save(); c.translate(12, (y0 + y1) / 2); c.rotate(-Math.PI / 2); c.fillText("output", 0, 0); c.restore();
-  }, [stepResult]);
+  }, [stepResult, prevStepResult]);
 
   return (
     <div className="app">
@@ -306,6 +394,17 @@ export default function App() {
             <Gain label="Ki — Integral" v={ki} min={0} max={8} step={0.1} on={setKi} c="#a855f7" />
             <Gain label="Kd — Derivative" v={kd} min={0} max={14} step={0.1} on={setKd} c="#22d3ee" />
             <Gain label="Robot speed" v={speed} min={40} max={260} step={5} on={setSpeed} c="#34d399" unit=" px/s" />
+            {(() => {
+              const r = impliedResponse(kp, kd);
+              if (!r) return null;
+              const label = r.zeta < 0.9 ? "underdamped" : r.zeta > 1.1 ? "overdamped" : "critically damped";
+              return (
+                <p className="implied">
+                  These Kp/Kd currently imply ζ ≈ {r.zeta.toFixed(2)} ({label}), ωn ≈ {r.wn.toFixed(1)} rad/s
+                  <span className="implied-note"> — ignores Ki, which this simple estimate doesn't model.</span>
+                </p>
+              );
+            })()}
           </div>
 
           <div className="side">
@@ -326,16 +425,41 @@ export default function App() {
               </div>
             </div>
             <div className="block actions">
+              <button className={running ? "" : "on"} onClick={() => setRunning((r) => !r)} title="Space bar">
+                {running ? "⏸ Pause" : "▶ Run"}
+              </button>
               <button className="kick" onClick={() => { sim.current.kick = 520 * (Math.random() > 0.5 ? 1 : -1); }}>⚡ Disturbance</button>
               <button onClick={reset}>↺ Reset</button>
-              <button onClick={() => setStepResult(runStepResponse(kp, ki, kd))}>📊 Step Response Test</button>
+              <button onClick={runStep}>📊 Step Response Test</button>
+            </div>
+
+            <div className="block">
+              <span className="blabel">Analytical tuner — pole placement</span>
+              <p className="tuner-help">Pick how it should respond; the exact Kp/Kd for that response are computed, not guessed.</p>
+              <div className="seg">
+                {TUNE_PRESETS.map((t) => (
+                  <button key={t.label} className={tuneZeta === t.zeta ? "on" : ""} onClick={() => setTuneZeta(t.zeta)}>{t.label}</button>
+                ))}
+              </div>
+              <label className="tuner-slider">
+                <span>Settling time ≈ {tuneTs.toFixed(1)}s</span>
+                <input type="range" min={0.4} max={3} step={0.1} value={tuneTs} onChange={(e) => setTuneTs(parseFloat(e.target.value))} />
+              </label>
+              <button className="tune-apply" onClick={applyTuning}>⚙ Apply &amp; Test</button>
             </div>
           </div>
         </div>
 
         {stepResult && (
           <div className="scope">
-            <div className="scope-head"><span>📊 STEP RESPONSE</span><small>isolated setpoint jump — rise time, overshoot, settling, steady-state error</small></div>
+            <div className="scope-head">
+              <span>📊 STEP RESPONSE</span>
+              <small>isolated setpoint jump — rise time, overshoot, settling, steady-state error</small>
+              <div className="export-group">
+                <button className="ghost-btn" onClick={exportStepPng} title="Save this chart as an image">⬇ PNG</button>
+                <button className="ghost-btn" onClick={exportStepCsv} title="Save the response data as a CSV">⬇ CSV</button>
+              </div>
+            </div>
             <canvas ref={stepCanvas} width={900} height={180} />
             <div className="step-metrics">
               <Metric label="Rise time (90%)" v={stepResult.metrics.riseTime.toFixed(2) + "s"} tone="p" />
